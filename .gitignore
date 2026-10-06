@@ -1,0 +1,7 @@
+node_modules/
+artifacts/
+release/
+csv_exports/
+.env
+.env.*
+!.env.example

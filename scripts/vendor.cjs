@@ -1,0 +1,13 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '..');
+fs.mkdirSync(path.join(root, 'vendor'), { recursive: true });
+const packageRoot = path.dirname(require.resolve('libphonenumber-js/package.json'));
+const source = fs.readFileSync(path.join(packageRoot, 'bundle/libphonenumber-max.js'), 'utf8').replace(/\/\/# sourceMappingURL=.*$/gm, '');
+fs.writeFileSync(path.join(root, 'vendor/libphonenumber-max.js'), source);
+fs.copyFileSync(path.join(packageRoot, 'LICENSE'), path.join(root, 'vendor/LICENSE-libphonenumber-js'));
+const version = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'))).version;
+fs.writeFileSync(path.join(root, 'vendor/README.md'), `Bundled libphonenumber-js ${version} (max metadata), MIT license.\nSource: https://github.com/catamphetamine/libphonenumber-js\nRegenerate with npm run vendor. No library network calls occur at runtime.\n`);
+const css = fs.readFileSync(path.join(root, 'styles/panel.css'), 'utf8');
+fs.writeFileSync(path.join(root, 'styles/panel-style.js'), `/* Generated from panel.css by npm run vendor. */\nglobalThis.MapsLeadFinder.panelStyle = ${JSON.stringify(css)};\n`);
+console.log(`Bundled libphonenumber-js ${version} and panel styles.`);

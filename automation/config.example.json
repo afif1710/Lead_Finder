@@ -1,0 +1,19 @@
+{
+  "sender": {
+    "name": "Afif",
+    "email": "craftedwebstudio@gmail.com",
+    "postalAddress": "",
+    "instagram": "https://www.instagram.com/whitewo_lf404/"
+  },
+  "leadsFile": "../../csv_exports/processed/usa_100_unique_no_website_leads_2026-10-07.csv",
+  "gmailClientFile": "google-desktop-client.json",
+  "snovCredentialsFile": "snov-credentials.json",
+  "limits": {
+    "maxBusinesses": 100,
+    "maxSnovRequestsPerRun": 250,
+    "maxSnovCreditsPerRun": 50,
+    "discoveryMinutes": 30,
+    "pilotEmails": 10,
+    "pauseSeconds": 8
+  }
+}

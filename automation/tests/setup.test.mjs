@@ -37,3 +37,25 @@ test('setup exits on timeout without mutating settings', async t => {
   assert.equal(await startSetup({ directory, configFile, config, onUrl: () => {}, timeoutMs: 50 }), 'timeout');
   assert.deepEqual(JSON.parse(await readFile(configFile, 'utf8')), config);
 });
+
+test('expired setup restarts at the same URL so an open form can retry its original token', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'lead-setup-resume-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configFile = join(directory, 'config.json');
+  const config = { sender: { name: 'Afif', email: 'craftedwebstudio@gmail.com', postalAddress: '', instagram: 'https://www.instagram.com/whitewo_lf404/' } };
+  await writeJson(configFile, config);
+  let firstUrl;
+  assert.equal(await startSetup({ directory, configFile, config, onUrl: url => { firstUrl = url; }, timeoutMs: 50 }), 'timeout');
+  let ready; const announced = new Promise(resolve => { ready = resolve; });
+  const saved = startSetup({ directory, configFile, config, onUrl: ready, timeoutMs: 5000 });
+  const resumedUrl = await announced;
+  assert.equal(resumedUrl, firstUrl);
+  const url = new URL(firstUrl);
+  const forbidden = await fetch(`${url.origin}/save`, { method: 'POST', headers: { Origin: 'https://untrusted.example', 'Content-Type': 'application/json', 'X-Setup-Token': url.searchParams.get('token') }, body: '{}' });
+  assert.equal(forbidden.status, 403);
+  assert.match((await forbidden.json()).message, /session.*verified/);
+  const response = await fetch(`${url.origin}/save`, { method: 'POST', headers: { Origin: url.origin, 'Content-Type': 'application/json', 'X-Setup-Token': url.searchParams.get('token') }, body: JSON.stringify({ postalAddress: '123 Test Street, Test City, Bangladesh', clientId: 'fixture-client', clientSecret: 'fixture-secret', googleClient: null }) });
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).message, /Saved locally/);
+  assert.equal(await saved, 'saved');
+});

@@ -21,7 +21,7 @@ node automation/cli.mjs init
 node automation/cli.mjs setup
 ```
 
-Open the displayed local URL in Edge. Enter your postal address and Snov API credentials from [Snov API settings](https://app.snov.io/account/api). You can leave the Google JSON upload empty until it is ready. Click **Save local settings**. The local setup listener closes after saving or fifteen minutes; rerun setup if it expires.
+Open the displayed local URL in Edge. Enter your postal address and Snov API credentials from [Snov API settings](https://app.snov.io/account/api). You can leave the Google JSON upload empty until it is ready. Click **Save local settings**. The local setup listener closes after saving or fifteen minutes; rerun setup if it expires. Its private session file preserves the same local address and verification token across restarts, so a still-open form can be saved again without retyping credentials. A connection failure now identifies the stopped setup session separately from a malformed Google JSON file. Keep the form tab open until saving succeeds.
 
 Settings are stored under `automation/.local/`, which is excluded from Git. The setup page never displays saved credentials and never sends an email. Do not paste passwords, OAuth tokens, or API secrets into a chat. Editing `.local/config.json` and `.local/snov-credentials.json` locally is also supported. Relative paths in config are resolved from `.local/`.
 

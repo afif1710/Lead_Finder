@@ -1,4 +1,4 @@
-import { readFile, mkdir, access } from 'node:fs/promises';
+import { readFile, mkdir, access, appendFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadLeads } from './lib/leads.mjs';
@@ -18,7 +18,7 @@ async function settings() {
   try { config = JSON.parse(await readFile(configFile, 'utf8')); }
   catch { throw new Error('Run init first, then edit automation/.local/config.json.'); }
   validateSender(config.sender, { requirePostalAddress: false });
-  const bounds = { maxBusinesses: [1, 100], maxSnovRequestsPerRun: [1, 250], maxSnovCreditsPerRun: [1, 50], discoveryMinutes: [1, 30], pilotEmails: [10, 10], pauseSeconds: [5, 60] };
+  const bounds = { maxBusinesses: [1, 100], maxSnovRequestsPerRun: [1, 500], maxSnovCreditsPerRun: [1, 50], discoveryMinutes: [1, 30], pilotEmails: [10, 10], pauseSeconds: [5, 60] };
   for (const [key, [minimum, maximum]] of Object.entries(bounds)) {
     if (key === 'maxSnovCreditsPerRun' && config.limits[key] === undefined) config.limits[key] = 50;
     if (!Number.isFinite(config.limits?.[key]) || config.limits[key] < minimum || config.limits[key] > maximum || !Number.isInteger(config.limits[key])) throw new Error(`Invalid limit: ${key}. Allowed ${minimum}–${maximum}.`);
@@ -44,7 +44,9 @@ async function status(config, leads, store) {
   const has = async file => access(file).then(() => true, () => false);
   let snovReady = false;
   try { const c = JSON.parse(await readFile(config.snovCredentialsFile, 'utf8')); snovReady = Boolean((c.clientId || c.client_id) && (c.clientSecret || c.client_secret)); } catch {}
-  console.log(JSON.stringify({ sourceBusinesses: leads.length, checkedInSnov: leads.filter(l => store.state.discovery[l.id]).length,
+  console.log(JSON.stringify({ sourceBusinesses: leads.length,
+    checkedInSnov: leads.filter(l => ['matched', 'no_email', 'needs_review'].includes(store.state.discovery[l.id]?.status)).length,
+    interruptedLookups: leads.filter(l => ['interrupted', 'in_progress'].includes(store.state.discovery[l.id]?.status)).length,
     sendableUnsentEmails: eligibleContacts(leads, store.state).length, attempted: store.state.sends.length,
     confirmedSent: store.state.sends.filter(s => s.status === 'sent').length, pilotClosed: store.state.pilot.closed,
     postalAddressConfigured: Boolean(config.sender.postalAddress?.trim()), snovCredentialsConfigured: snovReady,
@@ -67,7 +69,8 @@ async function run() {
     if (command === 'discover') {
       const { createSnovProvider } = await import('./lib/snov.mjs');
       const provider = await createSnovProvider({ credentialsFile: config.snovCredentialsFile, maxRequests: config.limits.maxSnovRequestsPerRun,
-        maxCredits: config.limits.maxSnovCreditsPerRun, deadlineMs: config.limits.discoveryMinutes * 60_000 });
+        maxCredits: config.limits.maxSnovCreditsPerRun, deadlineMs: config.limits.discoveryMinutes * 60_000,
+        onRequest: metadata => appendFile(join(directory, 'snov-request-log.jsonl'), JSON.stringify({ timestamp: new Date().toISOString(), ...metadata }) + '\n', { mode: 0o600 }) });
       try { console.log(JSON.stringify(await discover({ leads, store, provider, directory, signal: signalController.signal, onProgress: console.log }), null, 2)); }
       finally { await store.save(); }
     } else if (command === 'prepare') {

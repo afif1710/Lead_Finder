@@ -45,28 +45,46 @@ export async function discover({ leads, store, provider, directory, signal, onPr
   for (const lead of leads) {
     if (signal?.aborted) break;
     if (provider.stats?.stoppedCode) break;
-    if (state.discovery[lead.id]) continue;
+    const previous = state.discovery[lead.id];
+    const databaseOnly = previous && ['no_email', 'needs_review'].includes(previous.status)
+      && !(previous.searchedRoutes || []).includes('database') && !(previous.emails || []).length
+      && !previous.evidence?.phoneConflict
+      && typeof provider.findDatabaseEmails === 'function';
+    if (previous && !databaseOnly) continue;
     onProgress(`Checking ${processed + 1} remaining business: ${lead.businessName}`);
     // A paid task with an uncertain outcome must not be resubmitted on restart.
-    state.discovery[lead.id] = { status: 'in_progress', businessName: lead.businessName, emails: [], startedAt: new Date().toISOString() };
+    state.discovery[lead.id] = { status: 'in_progress', businessName: lead.businessName, emails: [], startedAt: new Date().toISOString(),
+      ...(databaseOnly ? { previousResult: previous, searchedRoutes: previous.searchedRoutes || ['domain'] } : {}) };
     await store.save();
     let found;
-    try { found = await provider.findEmails(lead, { signal }); }
+    const onCheckpoint = async checkpoint => {
+      state.discovery[lead.id].checkpoint = checkpoint;
+      await store.save();
+    };
+    try {
+      found = databaseOnly ? await provider.findDatabaseEmails(lead, { signal, onCheckpoint })
+        : await provider.findEmails(lead, { signal, onCheckpoint });
+    }
     catch (error) {
       state.discovery[lead.id] = { ...(error.partialResult || {}), status: 'interrupted', businessName: lead.businessName,
-        emails: error.partialResult?.emails || [], errorCode: error.code || 'api_error', checkedAt: new Date().toISOString() };
+        emails: error.partialResult?.emails || [], errorCode: error.code || 'api_error', checkedAt: new Date().toISOString(),
+        checkpoint: state.discovery[lead.id].checkpoint || null,
+        ...(databaseOnly ? { previousResult: previous, searchedRoutes: previous.searchedRoutes || ['domain'] } : {}) };
       if (error.partialResult) state.contacts[lead.id] = { ...lead, emails: error.partialResult.emails || [] };
       await store.save();
       await writeJson(join(directory, 'collected-emails.json'), leads.map(l => ({ ...l, result: state.discovery[l.id] || { status: 'not_checked' } })));
       throw error;
     }
     if (!['matched', 'no_email', 'needs_review'].includes(found?.status) || !Array.isArray(found.emails)) throw new Error('Snov returned an unexpected result; this business was not marked complete.');
-    state.discovery[lead.id] = { ...found, checkedAt: new Date().toISOString(), businessName: lead.businessName };
+    state.discovery[lead.id] = { ...found, checkedAt: new Date().toISOString(), businessName: lead.businessName,
+      ...(databaseOnly ? { previousResult: previous, searchedRoutes: [...new Set([...(previous.searchedRoutes || ['domain']), ...(found.searchedRoutes || ['database'])])] } : {}) };
     state.contacts[lead.id] = { ...lead, emails: found.emails };
     await store.save(); processed++;
     await writeJson(join(directory, 'collected-emails.json'), leads.map(l => ({ ...l, result: state.discovery[l.id] || { status: 'not_checked' } })));
   }
-  return { processed, checked: leads.filter(l => state.discovery[l.id]).length, ready: eligibleContacts(leads, state).length, stats: provider.stats };
+  return { processed, checked: leads.filter(l => ['matched', 'no_email', 'needs_review'].includes(state.discovery[l.id]?.status)).length,
+    interrupted: leads.filter(l => ['interrupted', 'in_progress'].includes(state.discovery[l.id]?.status)).length,
+    ready: eligibleContacts(leads, state).length, stats: provider.stats };
 }
 
 export async function preparePilot({ leads, store, sender, directory }) {

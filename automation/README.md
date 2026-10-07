@@ -33,7 +33,7 @@ node automation/cli.mjs discover
 node automation/cli.mjs prepare
 ```
 
-Discovery authenticates with Snov and reads the current credit balance before any business search. Each business name is resolved through documented Snov API methods. Returned company metadata must agree with the Maps business; conflicting phones and ambiguous name/location matches are set aside for review. No email address is guessed or constructed. All returned candidates within the provider's bounded page limit are saved; only matched emails marked valid by Snov can enter the send batch. Invalid and unknown email statuses remain in the local results for reference.
+Discovery authenticates with Snov and reads the current credit balance before any business search. Each business name is resolved through documented Snov API methods. The company-name Database Search route checks page one when domain resolution provides no usable contacts; a missing domain alone does not prove Snov has no email. Both routes are recorded, and previously saved domain-only results can use the new database route without submitting another paid name lookup. Returned company metadata must agree with the Maps business; conflicting phones and ambiguous name/location matches are set aside for review. No email address is guessed or constructed. All returned candidates within the provider's bounded page limit are saved; only matched emails marked valid by Snov can enter the send batch. Invalid and unknown email statuses remain in the local results for reference.
 
 This pilot uses the user's selected criterion **no website listed on Google Maps**. A Snov domain can reveal a site that Maps did not list; it is recorded as evidence, and website functionality is not scanned. The pitch does not claim the recipient has no website anywhere. Review business fit before extending outreach.
 
@@ -79,7 +79,7 @@ Suppression covers both the email and the associated business when it can be mat
 
 ## Limits and recovery
 
-- At most 100 source businesses, 250 Snov requests, 50 reserved Snov credits or the available balance (whichever is lower), and thirty minutes per discovery run. A task is polled at most six times; requests and authentication have timeouts.
+- At most 100 source businesses, 500 Snov requests, 50 reserved Snov credits or the available balance (whichever is lower), and thirty minutes per discovery run. A task is polled at most six times with bounded backoff; requests and authentication have timeouts. A private request log records only operation, response status, and duration, without credentials or response bodies. Credentials accepted by the token endpoint do not prove a plan permits every search endpoint; access denials are reported separately from missing emails.
 - Snov is paced below its documented 60-request/minute limit. Authentication, access denial, rate limits, exhausted credits, unexpected responses, and timeouts stop discovery and preserve results.
 - Completed business lookups are reused. A lookup interrupted after starting a paid task is marked for review and is not automatically resubmitted after a restart. Do not reset its status merely to retry a potentially billed task.
 - A lock blocks concurrent runs. After a crash, examine `.local/run.lock` and confirm its PID is no longer running before removing that one stale lock. Do not delete history or the whole local folder.

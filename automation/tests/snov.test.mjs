@@ -7,7 +7,11 @@ import { createSnovProvider } from '../lib/snov.mjs';
 
 const artifactRoot = fileURLToPath(new URL('../../artifacts/', import.meta.url));
 const lead = { id: 'lead1', businessName: 'Example Fence LLC', phone: '+1 512 555 0100', location: 'Austin, TX, USA', address: '123 Main St, Austin, TX 78701, United States', category: 'Fence contractor' };
-const hashes = { name: 'nametask123', company: 'companytask123', contacts: 'contactstask123', domain: 'domaintask123', verification: 'verificationtask123' };
+const hashes = { name: 'nametask123', company: 'companytask123', contacts: 'contactstask123', domain: 'domaintask123', verification: 'verificationtask123', database: 'databasetask123' };
+
+function databaseProspect(overrides = {}) {
+  return { first_name: 'Owner', job_title: 'Founder', company: { name: lead.businessName, domain: 'examplefence.test', location: 'Austin, Texas, United States' }, email_and_hidden_info_reveal: 'https://api.snov.io/v2/database-search/prospects/search-emails/start/prospecttask123', ...overrides };
+}
 
 async function fixture(t, options = {}) {
   await mkdir(artifactRoot, { recursive: true });
@@ -16,6 +20,7 @@ async function fixture(t, options = {}) {
   const credentialsFile = join(directory, 'credentials.json');
   await writeFile(credentialsFile, JSON.stringify({ client_id: 'secret-client-id', client_secret: 'secret-client-value' }));
   const calls = [];
+  let revealCount = 0;
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
     const parsed = new URL(url);
@@ -51,6 +56,21 @@ async function fixture(t, options = {}) {
         body = { data: { task_hash: hashes.verification } };
       } else if (path === '/v2/email-verification/result') body = {
         status: 'completed', data: (options.verifiedEmails ?? (options.emails ?? ['hello@examplefence.test'])).map(email => ({ email, result: { smtp_status: options.verificationStatus ?? 'valid', unknown_status_reason: options.verificationStatus === 'unknown' ? 'catchall' : undefined } })),
+      };
+      else if (path === '/v2/database-search/prospects/start') {
+        assert.equal(init.headers['Content-Type'], 'application/json');
+        assert.deepEqual(JSON.parse(init.body), { page: 1, filters: { company: { name: { include: [lead.businessName] } } } });
+        body = { meta: { task_hash: hashes.database }, links: { result: `https://api.snov.io/v2/database-search/prospects/result/${hashes.database}` } };
+      }
+      else if (path === `/v2/database-search/prospects/result/${hashes.database}`) body = {
+        status: 'completed', data: { total: (options.databaseProspects || []).length, page: 1, total_pages: options.databaseProspects?.length ? 1 : 0, prospects: options.databaseProspects || [] },
+      };
+      else if (/^\/v2\/database-search\/prospects\/search-emails\/start\//.test(path)) {
+        revealCount += 1;
+        body = { meta: { task_hash: `databaseemailtask${revealCount}` } };
+      }
+      else if (/^\/v2\/database-search\/prospects\/search-emails\/result\//.test(path)) body = {
+        status: 'completed', data: { emails: options.databaseEmailRowsByReveal?.[revealCount - 1] ?? options.databaseEmailRows ?? [{ email: 'owner@examplefence.test', smtp_status: 'valid' }] },
       };
       else assert.fail(`Unexpected API path: ${path}`);
     }
@@ -141,6 +161,144 @@ test('Snov public API provider', { concurrency: true }, async t => {
       const result = await provider.findEmails(lead);
       assert.equal(result.status, 'no_email');
       assert.equal(provider.stats.creditsReserved, 0);
+      assert.deepEqual(result.searchedRoutes, ['domain', 'database']);
+      assert.equal(f.calls.filter(call => call.url.includes('/database-search/prospects/start')).length, 1);
+    }),
+    t.test('missing domain uses company-name database search and returned location to identify the actual business', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect()], change: ({ path }) => path === '/v2/company-domain-by-name/result' ? Response.json({ status: 'completed', data: [] }) : undefined });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findEmails(lead);
+      assert.equal(result.status, 'matched');
+      assert.deepEqual(result.searchedRoutes, ['domain', 'database']);
+      assert.equal(result.evidence.cityExact, true);
+      assert.equal(result.evidence.stateExact, true);
+      assert.equal(result.evidence.countryUS, true);
+      assert.equal(result.evidence.phoneExact, false);
+      assert.deepEqual(result.emails.map(row => [row.email, row.status]), [['owner@examplefence.test', 'valid']]);
+      assert.equal(provider.stats.creditsReserved, 1);
+      assert.equal(f.calls.some(call => call.url.includes('/email-verification/start')), false);
+    }),
+    t.test('legacy domain-only no-result can run database fallback without repeating a paid name lookup', async t => {
+      const checkpoints = [];
+      const f = await fixture(t, { databaseProspects: [databaseProspect()] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead, { onCheckpoint: event => {
+        checkpoints.push(event);
+        if (event.phase === 'reveal_reserved') assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+      } });
+      assert.equal(result.status, 'matched');
+      assert.deepEqual(result.searchedRoutes, ['database']);
+      assert.equal(f.calls.some(call => call.url.includes('/company-domain-by-name/')), false);
+      assert.deepEqual(checkpoints.map(row => row.phase), ['started', 'searched', 'reveal_reserved', 'reveal_completed', 'completed']);
+      assert.equal(JSON.stringify(checkpoints).includes('secret-'), false);
+    }),
+    t.test('insufficient domain metadata falls back to reliable database company location', async t => {
+      const f = await fixture(t, { companyPhone: '', databaseProspects: [databaseProspect()] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findEmails(lead);
+      assert.equal(result.status, 'matched');
+      assert.deepEqual(result.searchedRoutes, ['domain', 'database']);
+      assert.equal(result.evidence.databaseLocation, 'Austin, Texas, United States');
+      assert.equal(result.evidence.observedWebsite, 'examplefence.test');
+      assert.equal(f.calls.some(call => call.url.includes('/generic-contacts/')), false);
+    }),
+    t.test('confirmed domain identity with no generic/domain emails can reveal a database prospect email', async t => {
+      const f = await fixture(t, { emails: [], domainEmails: [], databaseProspects: [databaseProspect()] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findEmails(lead);
+      assert.equal(result.status, 'matched');
+      assert.deepEqual(result.searchedRoutes, ['domain', 'database']);
+      assert.equal(result.emails[0].status, 'valid');
+      assert.equal(provider.stats.creditsReserved, 3);
+    }),
+    t.test('database prospects for the wrong company are set aside without any paid reveal', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect({ company: { name: 'Different Fence', domain: 'different.test', location: 'Austin, Texas, United States' } })] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'needs_review');
+      assert.deepEqual(result.emails, []);
+      assert.equal(provider.stats.creditsReserved, 0);
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+    t.test('database location cannot match a search-area-only Maps location', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect()] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails({ ...lead, address: '', location: 'Search area: Austin, Texas, USA' });
+      assert.equal(result.status, 'needs_review');
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+    t.test('database fallback cannot override a conflicting phone already observed for the same domain', async t => {
+      const f = await fixture(t, { companyPhone: '15125550999', companyCountry: 'USA', companyState: 'TX', databaseProspects: [databaseProspect()] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findEmails(lead);
+      assert.equal(result.status, 'needs_review');
+      assert.equal(result.evidence.phoneConflict, true);
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+    t.test('multiple company domains with matching names and locations require review before reveal', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect(), databaseProspect({ company: { name: lead.businessName, domain: 'another.test', location: 'Austin, Texas, United States' } })] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'needs_review');
+      assert.equal(provider.stats.creditsReserved, 0);
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+    t.test('unknown database emails are preserved, charge reveal credits, and stop after three prospects', async t => {
+      const prospects = Array.from({ length: 5 }, (_, index) => databaseProspect({ email_and_hidden_info_reveal: `https://api.snov.io/v2/database-search/prospects/search-emails/start/prospecttask${index}` }));
+      const f = await fixture(t, { databaseProspects: prospects, databaseEmailRowsByReveal: [0, 1, 2].map(index => [{ email: `owner${index}@examplefence.test`, smtp_status: 'unknown' }]) });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'matched');
+      assert.equal(result.emails.length, 3);
+      assert.ok(result.emails.every(row => row.status === 'unknown'));
+      assert.equal(provider.stats.creditsReserved, 3);
+      assert.equal(f.calls.filter(call => call.url.includes('/search-emails/start/')).length, 3);
+    }),
+    t.test('empty database reveal releases its reservation without guessing an email', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect()], databaseEmailRows: [] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'no_email');
+      assert.deepEqual(result.emails, []);
+      assert.equal(provider.stats.creditsReserved, 0);
+    }),
+    t.test('database feature denial is permission, not bad credentials or no matches', async t => {
+      const f = await fixture(t, { change: ({ path }) => path === '/v2/database-search/prospects/start' ? new Response('secret permission details', { status: 403 }) : undefined });
+      const provider = await createSnovProvider(f);
+      await assert.rejects(provider.findDatabaseEmails(lead), problem => {
+        assert.equal(problem.code, 'permission');
+        assert.equal(problem.message.includes('secret'), false);
+        return true;
+      });
+      assert.equal(provider.stats.stoppedCode, 'permission');
+      assert.equal(f.calls.filter(call => call.url.includes('/database-search/prospects/start')).length, 1);
+    }),
+    t.test('malformed database response is an API failure, not no matches', async t => {
+      const f = await fixture(t, { change: ({ path }) => path === `/v2/database-search/prospects/result/${hashes.database}` ? Response.json({ status: 'completed', data: { prospects: [] } }) : undefined });
+      const provider = await createSnovProvider(f);
+      await assert.rejects(provider.findDatabaseEmails(lead), { code: 'api_error' });
+      assert.equal(provider.stats.stoppedCode, 'api_error');
+    }),
+    t.test('foreign reveal URLs are rejected before any paid request or token disclosure', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect({ email_and_hidden_info_reveal: 'https://attacker.test/v2/database-search/prospects/search-emails/start/prospecttask123' })] });
+      const provider = await createSnovProvider(f);
+      await assert.rejects(provider.findDatabaseEmails(lead), { code: 'api_error' });
+      assert.ok(f.calls.every(call => new URL(call.url).hostname === 'api.snov.io'));
+      assert.equal(provider.stats.creditsReserved, 0);
+    }),
+    t.test('request diagnostics are awaited and contain no credentials, query names, hashes, or response bodies', async t => {
+      const events = [];
+      const f = await fixture(t);
+      const provider = await createSnovProvider({ ...f, onRequest: async event => {
+        await Promise.resolve();
+        assert.deepEqual(Object.keys(event), ['method', 'operation', 'status', 'durationMs']);
+        events.push(event);
+      } });
+      await provider.findDatabaseEmails(lead);
+      assert.equal(events.length, 4);
+      assert.equal(events[0].operation, 'authenticate');
+      assert.equal(events.at(-1).operation, 'database_search_result');
+      assert.equal(/secret-|Example|databasetask/.test(JSON.stringify(events)), false);
     }),
     t.test('authentication errors redact response bodies and credentials', async t => {
       const f = await fixture(t, { change: () => new Response('secret-client-id secret-client-value secret-access-token', { status: 403 }) });
@@ -285,4 +443,77 @@ test('Snov public API provider', { concurrency: true }, async t => {
       assert.equal(provider.stats.creditsReserved, 6);
     }),
   ]);
+});
+
+test('later malformed reveal preserves an earlier returned unknown database email', async t => {
+  const f = await fixture(t, { databaseProspects: [databaseProspect(), databaseProspect({ email_and_hidden_info_reveal: 'https://attacker.test/reveal' })], databaseEmailRows: [{ email: 'owner@examplefence.test', smtp_status: 'unknown' }] });
+  const provider = await createSnovProvider(f);
+  await assert.rejects(provider.findDatabaseEmails(lead), problem => {
+    assert.equal(problem.code, 'api_error');
+    assert.equal(problem.partialResult.status, 'needs_review');
+    assert.equal(problem.partialResult.emails[0].email, 'owner@examplefence.test');
+    assert.equal(problem.partialResult.emails[0].status, 'unknown');
+    return true;
+  });
+  assert.equal(f.calls.filter(call => call.url.includes('/search-emails/start/')).length, 1);
+  assert.equal(provider.stats.creditsReserved, 1);
+});
+
+test('Snov nullable company metadata', { concurrency: true }, async t => {
+  await Promise.all([
+    t.test('live-style unrelated company with a null domain is reviewed without a reveal', async t => {
+      const checkpoints = [];
+      const f = await fixture(t, { databaseProspects: [databaseProspect({ company: { name: 'Other Concrete Company', domain: null, location: 'Lodi, California, United States' } })] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead, { onCheckpoint: event => checkpoints.push(event) });
+      assert.equal(result.status, 'needs_review');
+      assert.equal(provider.stats.stoppedCode, null);
+      assert.equal(provider.stats.creditsReserved, 0);
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+      assert.deepEqual(checkpoints.map(row => row.phase), ['started', 'searched', 'completed']);
+    }),
+    t.test('matched company with a null domain uses its actual location and returned Snov email', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect({ company: { name: lead.businessName, domain: null, location: 'Austin, Texas, United States' } })], databaseEmailRows: [{ email: 'actualsnovcontact@gmail.com', smtp_status: 'valid' }] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'matched');
+      assert.equal(result.company.domain, '');
+      assert.equal(result.evidence.cityExact, true);
+      assert.equal(result.evidence.stateExact, true);
+      assert.equal(result.evidence.countryUS, true);
+      assert.equal(result.emails[0].email, 'actualsnovcontact@gmail.com');
+      assert.equal(result.emails[0].status, 'valid');
+      assert.equal(provider.stats.creditsReserved, 1);
+    }),
+    t.test('missing location and an empty domain cannot establish identity and do not stop discovery', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect({ company: { name: lead.businessName, domain: '   ', location: null } })] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'needs_review');
+      assert.equal(provider.stats.stoppedCode, null);
+      assert.equal(provider.stats.creditsReserved, 0);
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+    t.test('malformed nonempty real domain remains an API error after the free-search checkpoint', async t => {
+      const checkpoints = [];
+      const f = await fixture(t, { databaseProspects: [databaseProspect({ company: { name: lead.businessName, domain: 'https://examplefence.test/', location: 'Austin, Texas, United States' } })] });
+      const provider = await createSnovProvider(f);
+      await assert.rejects(provider.findDatabaseEmails(lead, { onCheckpoint: event => checkpoints.push(event) }), { code: 'api_error' });
+      assert.equal(provider.stats.stoppedCode, 'api_error');
+      assert.deepEqual(checkpoints.map(row => row.phase), ['started', 'searched']);
+      assert.equal(provider.stats.creditsReserved, 0);
+      assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+  ]);
+});
+
+test('null database domain preserves a known phone conflict for the same named company', async t => {
+  const f = await fixture(t, { companyPhone: '15125550999', companyCountry: 'USA', companyState: 'TX', databaseProspects: [databaseProspect({ company: { name: lead.businessName, domain: null, location: 'Austin, Texas, United States' } })] });
+  const provider = await createSnovProvider(f);
+  const result = await provider.findEmails(lead);
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.evidence.phoneConflict, true);
+  assert.deepEqual(result.emails, []);
+  assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+  assert.equal(provider.stats.creditsReserved, 2);
 });

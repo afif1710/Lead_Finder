@@ -129,6 +129,27 @@ test('discovery resumes completed businesses and saves real partial results on q
   assert.deepEqual(visited, ['lead-2']);
 });
 
+test('legacy domain-only no-results use only the new database route, never another paid name lookup', async t => {
+  const data = await setup(t, 3);
+  data.store.state.discovery['lead-0'] = { status: 'no_email', emails: [], reason: 'No domain returned' };
+  data.store.state.discovery['lead-1'] = { status: 'interrupted', emails: [], errorCode: 'timeout' };
+  data.store.state.discovery['lead-2'] = { status: 'needs_review', emails: [], evidence: { phoneConflict: true }, reason: 'Known phone conflict' };
+  const provider = { stats: {}, findEmails: async () => assert.fail('Do not resubmit a paid domain task'),
+    findDatabaseEmails: async (lead, { onCheckpoint }) => {
+      assert.equal(lead.id, 'lead-0'); await onCheckpoint({ operation: 'database_search', phase: 'requested' });
+      const saved = JSON.parse(await readFile(join(data.directory, 'history.json'), 'utf8'));
+      assert.equal(saved.discovery['lead-0'].status, 'in_progress');
+      return { status: 'no_email', emails: [], searchedRoutes: ['database'] };
+    } };
+  const summary = await discover({ ...data, provider });
+  assert.equal(summary.checked, 2);
+  assert.equal(summary.interrupted, 1);
+  assert.deepEqual(data.store.state.discovery['lead-0'].searchedRoutes, ['domain', 'database']);
+  assert.equal(data.store.state.discovery['lead-1'].status, 'interrupted');
+  assert.equal(data.store.state.discovery['lead-2'].evidence.phoneConflict, true);
+  await discover({ ...data, provider: { stats: {}, findEmails: async () => assert.fail('Completed results cannot repeat'), findDatabaseEmails: async () => assert.fail('Completed database route cannot repeat') } });
+});
+
 test('drafts use actual category, no price or backend promises, accurate footer and deterministic variation', () => {
   const roofing = { ...fixture(1), email: 'contact@example.com' };
   const fence = { ...fixture(2), category: 'Fence contractor', email: 'hello@example.com' };

@@ -10,7 +10,7 @@
   "snovCredentialsFile": "snov-credentials.json",
   "limits": {
     "maxBusinesses": 100,
-    "maxSnovRequestsPerRun": 250,
+    "maxSnovRequestsPerRun": 500,
     "maxSnovCreditsPerRun": 50,
     "discoveryMinutes": 30,
     "pilotEmails": 10,

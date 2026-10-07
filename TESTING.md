@@ -1,6 +1,19 @@
-# Verification performed — 5 October 2026
+# Verification performed
 
-## Automated checks
+## Complete automation — 8 October 2026
+
+- `node --test automation/tests/*.test.mjs`: **110/110 passed**, including an actual loaded MV3 extension in an isolated Edge browser with controlled Maps fixtures. After the final browser-shutdown fix, **18/18 focused Maps/browser/pipeline tests passed**, including a new regression for a browser that finishes launching after cancellation. The checks cover Google OAuth state/PKCE and account identity, send-only permissions, Snov identity checks and budgets, paid-task recovery, CSV downloads and cross-run deduplication, individual-profile website checks, cancellation, finite search/time/profile limits, zero results, stale previews, suppression, and send reservations before Gmail submission.
+- `npm test`: 15 extension tests passed. `npm run check` passed manifest, permissions, syntax, local runtime and stylesheet checks. The additional Maps browser fixture downloaded an actual filtered CSV and excluded a business whose website appeared only on its individual profile.
+- The live complete-workflow test used a separate headless **Microsoft Edge** profile and the existing extension, with the no-website checkbox selected. It searched **fence contractors in Knoxville, Tennessee, USA**, collected **93 listings**, and downloaded **7 no-website rows**. With the test target set to one, it individually confirmed **Knoxville Fence** against its Maps profile, US phone, category and address, and saved one new unique lead in `csv_exports/processed/usa_2026-10-08_9d3e67eb_no_website.csv`. The original raw download remains in `csv_exports/raw/2026-10-08_9d3e67eb/01.csv`.
+- Snov completed the new business lookup and returned no eligible email for that business. The authorized test instead used one already saved, identity-matched Snov contact for **Pinnacle Roofing & Restoration** from the original 100-business discovery. Its verification status remained **unknown**; the explicit single-recipient test exception did not convert it into a verified contact or authorize unverified bulk sending.
+- After the user manually approved Google permission for `craftedwebstudio@gmail.com`, Gmail accepted **one** test message and returned a message ID. The saved history records one attempted and confirmed submission, then closes the pilot. No second address or batch was sent. This confirms submission, not inbox delivery; the workflow has no inbox permission. The receipt, contact details, authorization and request history remain private under `automation/.local/`.
+- The normal workflow still selects only verified, identity-matched Snov contacts, at most one address per business and ten first emails per pilot. Tests establish that cancellation, an ambiguous send, quota/access failures, missing authorization, stale previews and a closed pilot stop further actions without automatic send retries. Completed stages and duplicate keys persist across restarts.
+
+This live check validates a one-lead Maps run and a single authorized test submission. It does not establish fresh 100-lead throughput, a ten-recipient live batch, deliverability, responses, or guaranteed Snov coverage. A Maps profile with no listed website can still have a website elsewhere; the user requested no additional website-functionality scan for this pilot.
+
+## Extension — 5 October 2026
+
+### Automated checks
 
 - `npm run check`: passed. Validated Manifest V3, Maps-only URL patterns, all referenced JavaScript files, JavaScript syntax, absence of extension network calls and extra API permissions, and synchronization of generated CSS.
 - `npm test`: 15 tests passed. Covered UAE, UK, Italian, Bangladeshi and North American phones; trunk prefixes and significant zeroes; existing `+` / `00` values; failed detection; Arabic digits; country-code validation; short national numbers; localized detail labels; search parsing; stable place identities including Maps' embedded search-query tokens; exact CSV columns, BOM, quoting, line endings, Unicode, filenames and formula protection; card extraction, website redirects, unreadable website actions, current ad markers, missing card names, and cancellable waits. New regression cases cover ordinary compact Belfast restaurant cards, hidden contact fields, contact readiness, uncertainty when cards render incrementally, and rejection of a recycled link pointing to another business.
@@ -8,7 +21,7 @@
 
 The browser fixtures deliberately use non-English button labels. CSV downloads are saved under `artifacts/msedge/` and `artifacts/chromium/` for inspection.
 
-## Live Google Maps checks
+### Live Google Maps checks
 
 - Reproduced the **restaurants in City Centre, Belfast, UK** failure: all initial organic cards used `.CpccDe`, which the previous ad rule incorrectly skipped. After the fix, two full live runs collected **114–115 listings** and exported six-column CSVs with no missing business names or categories and `+44` formatting for every nonblank phone. The latest run completed in **342 seconds**, detected **6 listings without websites after detail checks**, and flagged **26 unverified website statuses**. Those unverified listings are excluded from the no-website export. This is a known limitation, not evidence that those businesses lack websites. Raw test exports and reports are under `artifacts/msedge/live-belfast*`.
 - Compact-card navigation resolves fresh links by place identity, waits for the search URL to return after closing a profile, and uses page-world mouse events to activate lazy listing controllers. End markers are accepted only after any newly rendered cards and pending details are processed.
@@ -18,7 +31,7 @@ The browser fixtures deliberately use non-English button labels. CSV downloads a
 - Inspected live **dentist in New York** searches. Ad detection uses the observed advertising-settings URL and other advertising attributes, independent of the translated “Sponsored” label. Belfast restaurant inspection demonstrated that `.CpccDe` is also used for ordinary compact cards; that class is now a contact-detail fallback, not an ad marker.
 - Checked the two Dubai listings whose phone cells were blank against direct place searches; no phone action was exposed in those checks.
 
-## What was not verified
+### What was not verified
 
 - Installation through the visible **Load unpacked** button in your everyday Edge profile. That profile was left alone. Follow `README.md` to load the finished folder.
 - A manual installation in stock Google Chrome. Automated stock Chrome did not expose the extension service worker with the loading flags on this machine. The actual extension passed in Edge and Playwright Chromium; [Playwright documents the current side-loading flag limitations](https://playwright.dev/docs/chrome-extensions).

@@ -27,6 +27,7 @@
       adBadge: '[data-url*="adssettings.google.com/aboutthisad"], [data-url*="myadcenter.google.com"], [jsaction*="pane.advertising"], a[href*="adssettings.google.com/aboutthisad"]',
       detailHeading: 'h1.fontHeadlineLarge, [role="main"] h1, h1',
       detailPhone: '[data-item-id^="phone:tel:"], a[href^="tel:"]',
+      detailAddress: '[data-item-id="address"]',
       detailWebsite: 'a[data-item-id="authority"], a[data-value="Website"]',
       detailCategory: 'button[jsaction*="category"], [data-item-id="category"]',
       detailReady: '[data-item-id="address"], [data-item-id^="phone:tel:"], [data-item-id="authority"], [jsaction*="category"]',
@@ -35,6 +36,7 @@
       end: '.HlvSq, [data-end-of-list="true"]',
       busy: '[role="progressbar"], [aria-busy="true"]',
       consent: 'form[action*="consent.google"], iframe[src*="consent.google"], [data-consent-screen]',
+      challenge: '#captcha-form, #recaptcha, iframe[src*="recaptcha"], iframe[src*="hcaptcha"], [data-captcha-screen]',
       noResults: '[data-no-results="true"], .Q2vNVc',
       // Generic category candidates, excluding ratings and opening-hour text.
       cardMetadata: '.W4Efsd, [data-category]',

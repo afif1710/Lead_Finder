@@ -5,6 +5,7 @@ import { loadLeads } from './lib/leads.mjs';
 import { writeJson, openStore, withLock } from './lib/store.mjs';
 import { eligibleContacts, discover, preparePilot, sendPilot } from './lib/workflow.mjs';
 import { validateSender } from './lib/templates.mjs';
+import { parseRunOptions, mergeLeads, runAutomation } from './lib/pipeline.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const directory = join(root, '.local');
@@ -56,16 +57,33 @@ async function status(config, leads, store) {
 async function run() {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node.js 22 or later is required.');
   if (command === 'init') return init();
-  if (!['status', 'setup', 'discover', 'prepare', 'authorize', 'send', 'suppress'].includes(command)) throw new Error('Commands: init, setup, status, discover, prepare, authorize, send, suppress <email>.');
+  if (!['status', 'setup', 'collect', 'run', 'discover', 'prepare', 'authorize', 'send', 'suppress'].includes(command)) throw new Error('Commands: init, setup, collect, run, status, discover, prepare, authorize, send, suppress <email>.');
   const config = await settings();
-  const leads = await loadLeads(config.leadsFile, config.limits.maxBusinesses);
+  let leads = await loadLeads(config.leadsFile, config.limits.maxBusinesses);
   return withLock(directory, async () => {
     const store = await openStore(directory);
+    if (['status', 'prepare', 'send'].includes(command) && store.state.workflow?.mapsFile && store.state.workflow.mapsLeadCount) leads = mergeLeads(leads, await loadLeads(store.state.workflow.mapsFile, 100));
     if (command === 'setup') {
       const { startSetup } = await import('./lib/setup.mjs');
       return startSetup({ directory, configFile, config, signal: signalController.signal, onUrl: url => console.log(`Open this local setup page in Edge yourself:\n${url}`) });
     }
     if (command === 'status') return status(config, leads, store);
+    if (command === 'collect' || command === 'run') {
+      const options = parseRunOptions(process.argv.slice(3));
+      const workflowAbort = new AbortController();
+      const workflowSignal = AbortSignal.any([signalController.signal, workflowAbort.signal]);
+      const timeout = setTimeout(() => workflowAbort.abort(new Error('The workflow reached its 90-minute limit.')), 90 * 60000);
+      const hardStop = setTimeout(() => { console.error('The workflow exceeded its shutdown deadline. Progress was checkpointed; inspect the recorded lock PID before recovery.'); process.exit(1); }, 90 * 60000 + 20000);
+      try {
+        if (command === 'collect') {
+          if (options.testEmail || options.dryRun) throw new Error('collect never sends or searches Snov; use run for workflow options.');
+          const { collectMaps } = await import('./lib/maps.mjs');
+          const result = await collectMaps({ store, baseline: leads, root: dirname(root), directory, signal: workflowSignal, onProgress: console.log, ...config.maps, ...options });
+          const { leads: found, ...summary } = result; console.log(JSON.stringify({ newMapsLeads: found.length, ...summary }, null, 2));
+        } else console.log(JSON.stringify(await runAutomation({ config, root: dirname(root), directory, store, baseline: leads, runOptions: options, signal: workflowSignal, onProgress: console.log }), null, 2));
+      } finally { clearTimeout(timeout); clearTimeout(hardStop); }
+      return;
+    }
     if (command === 'discover') {
       const { createSnovProvider } = await import('./lib/snov.mjs');
       const provider = await createSnovProvider({ credentialsFile: config.snovCredentialsFile, maxRequests: config.limits.maxSnovRequestsPerRun,
@@ -74,7 +92,9 @@ async function run() {
       try { console.log(JSON.stringify(await discover({ leads, store, provider, directory, signal: signalController.signal, onProgress: console.log }), null, 2)); }
       finally { await store.save(); }
     } else if (command === 'prepare') {
-      console.log(JSON.stringify(await preparePilot({ leads, store, sender: config.sender, directory }), null, 2));
+      const options = parseRunOptions(process.argv.slice(3));
+      if (Object.keys(options).some(key => key !== 'testEmail')) throw new Error('prepare accepts only --test-email for the one explicitly authorized test.');
+      console.log(JSON.stringify(await preparePilot({ leads, store, sender: config.sender, directory, testEmail: options.testEmail }), null, 2));
     } else if (command === 'authorize') {
       validateSender(config.sender);
       const { authorizeGmail } = await import('./lib/gmail.mjs');

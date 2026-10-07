@@ -8,6 +8,14 @@
   "leadsFile": "../../csv_exports/processed/usa_100_unique_no_website_leads_2026-10-07.csv",
   "gmailClientFile": "google-desktop-client.json",
   "snovCredentialsFile": "snov-credentials.json",
+  "maps": {
+    "target": 100,
+    "maxSearches": 12,
+    "maxMinutes": 45,
+    "scanSeconds": 180,
+    "maxProfiles": 300,
+    "channel": "msedge"
+  },
   "limits": {
     "maxBusinesses": 100,
     "maxSnovRequestsPerRun": 500,

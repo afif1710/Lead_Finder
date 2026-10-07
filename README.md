@@ -41,7 +41,7 @@ The CSV contains six columns: `business name`, `category`, `phone number`, `webs
 
 ## Development
 
-Optional email outreach scripts live in [automation/](automation/README.md). They use a separate local configuration and the existing processed US lead CSV to search Snov.io, prepare individual website pitches, and send a first batch of at most ten through Gmail. Account authorization is required. Credentials, contact data, and send history are excluded from Git. See the automation README for setup and limits.
+The optional [automation workflow](automation/README.md) runs the extension in an isolated browser, collects and deduplicates new US Maps leads, looks up Snov.io emails, prepares individual website pitches, and sends a first batch of at most ten through Gmail. Account authorization is required. Credentials, contact data, and collection/send history are excluded from Git. See the automation README for the one-command workflow, setup, limits and recovery.
 
 With Node.js and npm installed:
 
@@ -70,7 +70,7 @@ styles/        Panel styling and generated stylesheet module
 vendor/        Bundled phone library, license, and provenance
 tests/         Unit and browser integration tests
 scripts/       Validation, asset generation, and packaging
-automation/    Optional Snov.io email lookup and a bounded Gmail outreach pilot
+automation/    Bounded Maps collection, Snov.io lookup, and Gmail outreach workflow
 ```
 
 Dependencies, CSV exports, test artifacts, and generated releases are excluded from Git. Third-party licensing information is included in `vendor/`.

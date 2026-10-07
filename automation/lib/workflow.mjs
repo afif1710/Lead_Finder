@@ -13,14 +13,16 @@ const pause = (ms, signal) => new Promise((resolve, reject) => {
   signal?.addEventListener('abort', abort, { once: true });
 });
 
-export function eligibleContacts(leads, state) {
+export function eligibleContacts(leads, state, { testEmail } = {}) {
+  if (testEmail && !validEmail(testEmail)) throw new Error('The single test requires an exact, valid email address returned by Snov.');
   const result = [], selectedEmails = new Set(), selectedKeys = new Set();
   for (const original of leads) {
     const lead = { ...original, keys: leadKeys(original) };
     if (lead.keys.some(key => selectedKeys.has(key))) continue;
     const found = state.discovery[lead.id];
     if (found?.status !== 'matched') continue;
-    const emails = (found.emails || []).filter(e => e.source === 'Snov.io' && e.status === 'valid' && validEmail(e.email));
+    const emails = (found.emails || []).filter(e => e.source === 'Snov.io' && validEmail(e.email)
+      && (testEmail ? e.email.toLowerCase() === testEmail.toLowerCase() && ['valid', 'unknown'].includes(e.status) : e.status === 'valid'));
     // One address per business; shared mailboxes never receive multiple pitches.
     emails.sort((a, b) => {
       const role = email => /^(?:info|contact|hello|office|admin|enquiries|inquiries)@/i.test(email) ? 0 : 1;
@@ -33,6 +35,7 @@ export function eligibleContacts(leads, state) {
       selectedEmails.add(email);
       lead.keys.forEach(key => selectedKeys.add(key));
       result.push({ ...lead, email, emailEvidence: foundEmail, companyEvidence: found.evidence });
+      if (testEmail) return result;
       break;
     }
   }
@@ -87,13 +90,14 @@ export async function discover({ leads, store, provider, directory, signal, onPr
     ready: eligibleContacts(leads, state).length, stats: provider.stats };
 }
 
-export async function preparePilot({ leads, store, sender, directory }) {
+export async function preparePilot({ leads, store, sender, directory, testEmail }) {
   validateSender(sender);
+  if (store.state.sends.some(send => send.status === 'reserved')) throw new Error('An earlier send has an uncertain outcome. Check Gmail Sent before preparing another batch.');
   const used = store.state.sends.length;
   if (store.state.pilot.closed || used >= 10) throw new Error('The first 10-email pilot has stopped for review. No further sends are enabled.');
-  const recipients = eligibleContacts(leads, store.state).slice(0, 10 - used);
+  const recipients = eligibleContacts(leads, store.state, { testEmail }).slice(0, testEmail ? 1 : 10 - used);
   if (!recipients.length) throw new Error('No matched, Snov-verified, unsent business emails are available. Nothing was sent.');
-  const batch = { version: 1, id: randomUUID(), preparedAt: new Date().toISOString(), sender: { ...sender },
+  const batch = { version: 1, id: randomUUID(), preparedAt: new Date().toISOString(), sender: { ...sender }, testEmail: testEmail || null,
     recipients: recipients.map(lead => ({ lead, draft: draftEmail(lead, sender) })) };
   batch.digest = batchDigest(batch);
   await writeJson(join(directory, 'pilot-preview.json'), batch);
@@ -101,7 +105,7 @@ export async function preparePilot({ leads, store, sender, directory }) {
 }
 
 export function batchDigest(batch) {
-  return createHash('sha256').update(JSON.stringify({ version: batch.version, id: batch.id, sender: batch.sender, recipients: batch.recipients })).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ version: batch.version, id: batch.id, sender: batch.sender, recipients: batch.recipients, ...(batch.testEmail !== undefined ? { testEmail: batch.testEmail } : {}) })).digest('hex');
 }
 
 export async function sendPilot({ leads, store, sender, directory, sendMessage, signal, pauseSeconds = 8, sleep = pause, onProgress = () => {} }) {
@@ -112,7 +116,8 @@ export async function sendPilot({ leads, store, sender, directory, sendMessage, 
   const batch = JSON.parse(await readFile(join(directory, 'pilot-preview.json'), 'utf8'));
   if (batch.version !== 1 || batch.digest !== batchDigest(batch) || JSON.stringify(batch.sender) !== JSON.stringify(sender)) throw new Error('The prepared batch or sender changed. Run prepare again before sending.');
   if (!Array.isArray(batch.recipients) || !batch.recipients.length || batch.recipients.length > 10) throw new Error('Prepared pilot is invalid.');
-  const current = new Map(eligibleContacts(leads, state).map(l => [l.id, l]));
+  if (batch.testEmail && (batch.recipients.length !== 1 || batch.recipients[0].lead.email !== batch.testEmail.toLowerCase())) throw new Error('The authorized unverified test permits exactly one saved recipient.');
+  const current = new Map(eligibleContacts(leads, state, { testEmail: batch.testEmail }).map(l => [l.id, l]));
   const stale = batch.recipients.some(({ lead, draft }) => {
     const now = current.get(lead.id);
     return !now || now.email !== lead.email || JSON.stringify(now.keys) !== JSON.stringify(lead.keys) || JSON.stringify(draftEmail(now, sender)) !== JSON.stringify(draft);
@@ -129,6 +134,7 @@ export async function sendPilot({ leads, store, sender, directory, sendMessage, 
     }
     const attempt = { id: randomUUID(), batchId: batch.id, leadId: lead.id, keys: lead.keys, email: lead.email,
       businessName: lead.businessName, status: 'reserved', startedAt: new Date().toISOString(), messageId: `${randomUUID()}@gmail.com` };
+    if (batch.testEmail) attempt.unverifiedTest = { email: batch.testEmail, originalStatus: lead.emailEvidence.status, scope: 'One explicitly requested test; regular outreach still requires verified contacts.' };
     // Write reservation BEFORE the irreversible send. Every outcome consumes a pilot slot.
     state.sends.push(attempt);
     await store.save();

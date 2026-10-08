@@ -53,7 +53,7 @@ function usState(value) {
 function reliableUSLocation(lead) {
   // A search-area label describes the query, not the business's physical city.
   const address = String(lead.address || '').trim();
-  const addressMatch = address.match(/,\s*([^,]+),\s*([A-Za-z]{2})\s+\d{5}(?:-\d{4})?(?:,\s*(?:United States(?: of America)?|USA))?\s*$/i);
+  const addressMatch = address.match(/(?:^|,)\s*([^,]+),\s*([A-Za-z]{2})\s+\d{5}(?:-\d{4})?(?:,\s*(?:United States(?: of America)?|USA))?\s*$/i);
   if (addressMatch && STATES.has(addressMatch[2].toUpperCase())) return { city: addressMatch[1].trim(), state: addressMatch[2].toUpperCase() };
   const location = String(lead.location || '').trim();
   if (/^search\s+area\s*:/i.test(location)) return null;
@@ -385,7 +385,23 @@ export async function createSnovProvider({
       await checkpoint('completed');
       return empty('needs_review', 'Snov returned database prospects, but their company identity could not be confirmed against the actual Maps business.');
     }
-    const identities = new Set(candidates.map(({ company }) => company.domain || [normalizeName(company.name), normalizeName(company.city), usState(company.state), company.country.toLowerCase()].join('|')));
+    const locationKey = company => [normalizeName(company.name), normalizeName(company.city), usState(company.state), company.country.toLowerCase()].join('|');
+    const domainsByLocation = new Map();
+    for (const { company } of candidates) {
+      const key = locationKey(company);
+      if (!domainsByLocation.has(key)) domainsByLocation.set(key, new Set());
+      if (company.domain) domainsByLocation.get(key).add(company.domain);
+    }
+    // Missing metadata is not a conflicting identity. Consolidate only already
+    // matched records at the exact same name/location with one observed domain.
+    for (const candidate of candidates) {
+      const domains = domainsByLocation.get(locationKey(candidate.company));
+      if (!candidate.company.domain && domains.size === 1) {
+        candidate.company.domain = [...domains][0];
+        candidate.evidence.domainConsolidatedFromMatchingCompany = true;
+      }
+    }
+    const identities = new Set(candidates.map(({ company }) => company.domain || locationKey(company)));
     if (identities.size !== 1) {
       await checkpoint('completed');
       return empty('needs_review', 'Snov returned multiple matching company identities or domains; no contact was revealed.');

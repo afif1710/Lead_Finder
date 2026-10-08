@@ -220,6 +220,14 @@ test('Snov public API provider', { concurrency: true }, async t => {
       assert.equal(provider.stats.creditsReserved, 0);
       assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
     }),
+    t.test('a Maps city and ZIP address establishes location without inventing a street address', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect()] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails({ ...lead, address: 'Austin, TX 78701, United States', location: 'Search area: Dallas, Texas, USA' });
+      assert.equal(result.status, 'matched');
+      assert.equal(result.evidence.cityExact, true);
+      assert.equal(result.company.city, 'Austin');
+    }),
     t.test('database location cannot match a search-area-only Maps location', async t => {
       const f = await fixture(t, { databaseProspects: [databaseProspect()] });
       const provider = await createSnovProvider(f);
@@ -234,6 +242,15 @@ test('Snov public API provider', { concurrency: true }, async t => {
       assert.equal(result.status, 'needs_review');
       assert.equal(result.evidence.phoneConflict, true);
       assert.equal(f.calls.some(call => call.url.includes('/search-emails/start/')), false);
+    }),
+    t.test('duplicate matched company metadata with a missing domain does not block a verified contact', async t => {
+      const f = await fixture(t, { databaseProspects: [databaseProspect(), databaseProspect({ company: { name: lead.businessName, domain: null, location: 'Austin, Texas, United States' } })] });
+      const provider = await createSnovProvider(f);
+      const result = await provider.findDatabaseEmails(lead);
+      assert.equal(result.status, 'matched');
+      assert.equal(result.emails[0].status, 'valid');
+      assert.equal(result.company.domain, 'examplefence.test');
+      assert.equal(f.calls.filter(call => call.url.includes('/search-emails/start/')).length, 1);
     }),
     t.test('multiple company domains with matching names and locations require review before reveal', async t => {
       const f = await fixture(t, { databaseProspects: [databaseProspect(), databaseProspect({ company: { name: lead.businessName, domain: 'another.test', location: 'Austin, Texas, United States' } })] });

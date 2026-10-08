@@ -97,3 +97,18 @@ test('invalid or non-US search configuration stops before browser startup', asyn
   await assert.rejects(collectMaps({ ...data, target: 101, browserFactory }), /limits/);
   await assert.rejects(collectMaps({ ...data, queries: [{ profession: 'fence', city: 'Dubai' }], browserFactory }), /United States/);
 });
+
+test('explicit professional-service category terms accept the chosen niche and reject unrelated results', async t => {
+  const data = await fixture(t);
+  const browserFactory = async () => ({ search: async () => ({ candidates: [candidate(1), candidate(2)], file: null }),
+    verify: async row => ({ ...lead(Number(row.name.at(-1))), category: row.name.endsWith('1') ? 'Certified public accountant' : 'Restaurant' }), close: async () => {} });
+  const result = await collectMaps({ ...data, target: 2, maxSearches: 1, categoryTerms: ['accountant', 'bookkeeping'], browserFactory });
+  assert.equal(result.leads.length, 1);
+  assert.equal(result.leads[0].category, 'Certified public accountant');
+  assert.deepEqual(data.store.state.maps.searches[0].rejected, { category: 1 });
+});
+
+test('unsafe or empty category plans stop before browser startup', async t => {
+  const data = await fixture(t); const browserFactory = async () => assert.fail('No browser should start');
+  for (const categoryTerms of [[], ['.*'], ['accountant\nrestaurant'], [7]]) await assert.rejects(collectMaps({ ...data, categoryTerms, browserFactory }), /Category terms/);
+});

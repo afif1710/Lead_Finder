@@ -237,7 +237,7 @@ export async function createMapsBrowser({ root, directory, signal, channel = 'ms
       const { parsePhoneNumberFromString } = await import('libphonenumber-js');
       const phone = parsePhoneNumberFromString(details.rawPhone, 'US');
       if (!phone?.isValid() || phone.country !== 'US') throw problem('non_us_phone', 'A valid United States phone was not confirmed.');
-      const city = details.address.match(/,\s*([^,]+),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?(?:,\s*United States)?\s*$/i);
+      const city = details.address.match(/(?:^|,)\s*([^,]+),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?(?:,\s*United States)?\s*$/i);
       return { businessName: details.businessName, phone: phone.formatInternational(), category: details.category || candidate.category,
         location: city ? `${city[1].trim()}, ${city[2].toUpperCase()}, USA` : `Search area: ${candidate.searchArea}`,
         address: details.address, profession: candidate.profession, mapsUrl: details.mapsUrl, websiteStatus: 'No website listed on Google Maps' };
@@ -247,9 +247,12 @@ export async function createMapsBrowser({ root, directory, signal, channel = 'ms
 }
 
 export async function collectMaps({ store, baseline = [], root, directory, target = 100, maxSearches = 12, maxMinutes = 45,
-  scanSeconds = 180, maxProfiles = 300, queries = DEFAULT_QUERIES, signal, onProgress = () => {}, browserFactory = createMapsBrowser, channel = 'msedge' }) {
+  scanSeconds = 180, maxProfiles = 300, queries = DEFAULT_QUERIES, signal, onProgress = () => {}, browserFactory = createMapsBrowser, channel = 'msedge', categoryTerms }) {
   for (const [value, upper] of [[target, 100], [maxSearches, 24], [maxMinutes, 60], [scanSeconds, 600], [maxProfiles, 500]]) if (!Number.isInteger(value) || value < 1 || value > upper) throw problem('config', 'Maps limits must be positive integers within their documented caps.');
   if (!Array.isArray(queries) || !queries.length || queries.length > 256 || queries.some(query => !query.profession?.trim() || !query.city?.trim() || !/\b(?:USA|United States)\b/i.test(query.city) || /[\r\n\u0000-\u001f]/.test(query.profession + query.city))) throw problem('config', 'Provide a finite United States profession/city search plan.');
+  if (categoryTerms !== undefined && (!Array.isArray(categoryTerms) || !categoryTerms.length || categoryTerms.length > 32 || categoryTerms.some(term => typeof term !== 'string' || !/^[a-z][a-z ]{1,59}$/i.test(term)))) throw problem('config', 'Category terms must be a finite list of plain-text business types.');
+  const acceptsCategory = category => categoryTerms ? categoryTerms.some(term => category.toLowerCase().includes(term.toLowerCase()))
+    : /contractor|remodel|landscap|floor|fence|deck|roof|concrete|construction|builder|masonry|kitchen|bathroom/i.test(category);
   const state = store.state;
   if (!state.maps) state.maps = { version: 1, seenKeys: [], searches: [], runs: {} };
   if (state.maps.version !== 1 || !Array.isArray(state.maps.seenKeys) || !Array.isArray(state.maps.searches) || !state.maps.runs) throw problem('history_invalid', 'Maps history is invalid; restore it before collecting new leads.');
@@ -304,7 +307,7 @@ export async function collectMaps({ store, baseline = [], root, directory, targe
           try {
             const lead = await bounded(browser.verify(candidate), Math.min(40000, Math.max(1, deadline - Date.now())), signal, 'Individual business verification');
             if (lead.websiteStatus !== 'No website listed on Google Maps' || !/^1[2-9]\d{2}[2-9]\d{6}$/.test(phoneDigits(lead.phone)) || !/\b(?:USA|United States)\b/i.test(lead.location)) throw problem('unconfirmed', 'The verified lead lacks required US or no-website evidence.');
-            if (!lead.category || !/contractor|remodel|landscap|floor|fence|deck|roof|concrete|construction|builder|masonry|kitchen|bathroom/i.test(lead.category)) throw problem('category', 'The business is outside the selected website-service niches.');
+            if (!lead.category || !acceptsCategory(lead.category)) throw problem('category', 'The business is outside the selected website-service niches.');
             const keys = leadKeys(lead);
             if (keys.some(value => seen.has(value))) continue;
             lead.id = leadId(lead); lead.checkedDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());

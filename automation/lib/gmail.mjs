@@ -12,7 +12,7 @@ const SEND_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
 const TOKEN_FILE = 'gmail-auth.json';
 const REQUEST_TIMEOUT_MS = 30_000;
-const MAX_AUTH_TIMEOUT_MS = 180_000;
+const MAX_AUTH_TIMEOUT_MS = 600_000;
 
 /** Error messages deliberately exclude provider responses, tokens and recipient data. */
 export class GmailError extends Error {
@@ -217,7 +217,7 @@ export async function authorizeGmail({
     throw error('credentials_missing', 'Provide the downloaded Desktop app OAuth client JSON path.');
   }
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_AUTH_TIMEOUT_MS) {
-    throw error('configuration_invalid', 'Authorization timeout must be between 1 ms and 3 minutes.');
+    throw error('configuration_invalid', 'Authorization timeout must be between 1 ms and 10 minutes.');
   }
   if (loginHint !== undefined && normalizeEmail(loginHint) !== expectedEmail) {
     throw error('configuration_invalid', 'The Google account hint must match the configured sender.');

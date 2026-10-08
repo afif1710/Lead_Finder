@@ -233,13 +233,32 @@ test('authorization timeout closes the loopback listener and creates no token', 
   await assert.rejects(fetch(redirect, { signal: AbortSignal.timeout(1000) }));
 });
 
+test('the ten-minute authorization window accepts cancellation and preserves previously saved authorization', async t => {
+  const { privateDir, clientFile } = await fixture(t);
+  const tokenFile = join(privateDir, 'gmail-auth.json');
+  const previous = await readFile(tokenFile, 'utf8');
+  const controller = new AbortController();
+  let redirect;
+  let calls = 0;
+  await assert.rejects(authorizeGmail({ privateDir, clientFile, timeoutMs: 600_000, signal: controller.signal,
+    onAuthorizationUrl: value => {
+      redirect = new URL(value).searchParams.get('redirect_uri');
+      controller.abort();
+    },
+    fetchImpl: async () => { calls++; },
+  }), { code: 'auth_cancelled' });
+  assert.equal(calls, 0);
+  assert.equal(await readFile(tokenFile, 'utf8'), previous);
+  await assert.rejects(fetch(redirect, { signal: AbortSignal.timeout(1000) }));
+});
+
 test('invalid client type and excessive authorization timeout are rejected before presenting a URL', async t => {
   const { privateDir, clientFile } = await fixture(t, { auth: false });
   await writeFile(clientFile, JSON.stringify({ web: client }));
   let announcements = 0;
   const onAuthorizationUrl = () => { announcements++; };
   await assert.rejects(authorizeGmail({ privateDir, clientFile, onAuthorizationUrl }), { code: 'credentials_invalid' });
-  await assert.rejects(authorizeGmail({ privateDir, clientFile, onAuthorizationUrl, timeoutMs: 180_001 }), { code: 'configuration_invalid' });
+  await assert.rejects(authorizeGmail({ privateDir, clientFile, onAuthorizationUrl, timeoutMs: 600_001 }), { code: 'configuration_invalid' });
   assert.equal(announcements, 0);
 });
 

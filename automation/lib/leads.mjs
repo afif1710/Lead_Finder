@@ -48,9 +48,18 @@ export function validEmail(value) {
 export function leadKeys(lead) {
   const keys = [`phone:${phoneDigits(lead.phone)}`, `name:${normalizedName(lead.businessName)}|${lead.location.toLowerCase().trim()}`];
   try {
-    const encoded = decodeURIComponent(new URL(lead.mapsUrl).pathname);
-    const place = encoded.match(/!1s([^!]+)/)?.[1];
-    if (place) keys.push(`place:${place}`);
+    const url = new URL(lead.mapsUrl);
+    const encoded = decodeURIComponent(url.pathname);
+    // Detail URLs can carry the original search as an earlier !1s token.
+    // Prefer the actual place identity, as the extension does, rather than
+    // treating a shared query as a duplicate business.
+    const actual = encoded.match(/!1s(0x[0-9a-f]+:0x[0-9a-f]+)(?:!|$)/i)?.[1];
+    const tokens = [...encoded.matchAll(/!1s([^!]+)/g)];
+    const fallback = tokens.reverse().find(token =>
+      !encoded.slice(0, token.index).endsWith('!2m1') && !/[\s+]/.test(token[1]))?.[1];
+    const cid = url.searchParams.get('cid');
+    if (cid && /^\d+$/.test(cid)) keys.push(`place:cid:${cid}`);
+    else if (actual || fallback) keys.push(`place:${actual || fallback}`);
   } catch { /* Phone and name/location remain available. */ }
   return keys;
 }

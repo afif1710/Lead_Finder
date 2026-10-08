@@ -7,6 +7,7 @@ import { createSnovProvider } from './snov.mjs';
 import { eligibleContacts, discover, preparePilot, sendPilot } from './workflow.mjs';
 import { sendGmailMessage } from './gmail.mjs';
 import { writeJson } from './store.mjs';
+import { validateSender } from './templates.mjs';
 
 export function parseRunOptions(args) {
   const result = {};
@@ -40,6 +41,7 @@ export async function runAutomation({ config, root, directory, store, baseline, 
   collect = collectMaps, providerFactory = createSnovProvider, sendMessage = sendGmailMessage }) {
   if (store.state.pilot.closed || store.state.sends.length >= 10) throw new Error('The initial email pilot is closed for review. This command will not collect or send another batch until the user explicitly requests it.');
   if (store.state.sends.some(send => send.status === 'reserved')) throw new Error('An earlier email attempt has an uncertain outcome. Inspect Gmail Sent before continuing; it will not be retried.');
+  validateSender(config.sender);
   if (!runOptions.dryRun) await access(join(directory, 'gmail-auth.json')).catch(() => { throw new Error('Authorize the intended Google account before starting a workflow that sends email. Use --dry-run to collect and prepare only.'); });
   if (runOptions.testEmail && !eligibleContacts(baseline, store.state, { testEmail: runOptions.testEmail }).length) throw new Error('The single test address is not a matched, unsent Snov contact in the saved input.');
   let workflow = store.state.workflow;

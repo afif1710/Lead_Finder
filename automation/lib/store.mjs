@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { leadKeys, validEmail } from './leads.mjs';
 
 export async function writeJson(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -50,4 +51,29 @@ export function isSuppressed(state, lead, email) {
 export function alreadyAttempted(state, lead, email) {
   const normalized = email.toLowerCase();
   return state.sends.some(s => s.email === normalized || (s.keys || []).some(k => lead.keys.includes(k)));
+}
+
+/** Keep every known business association when a shared mailbox opts out. */
+export function suppressEmail(state, email) {
+  const normalized = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  if (!validEmail(normalized)) throw new Error('Supply a valid email to suppress.');
+  const keys = new Set();
+  const addKeys = values => {
+    for (const key of values || []) if (typeof key === 'string' && key) keys.add(key);
+  };
+  const sameEmail = value => typeof value === 'string' && value.trim().toLowerCase() === normalized;
+  for (const contact of Object.values(state.contacts)) {
+    if (Array.isArray(contact?.emails) && contact.emails.some(candidate => sameEmail(candidate?.email))) addKeys(leadKeys(contact));
+  }
+  // An attempt may be checkpointed before its contact entry is available.
+  for (const send of state.sends) if (sameEmail(send.email)) addKeys(send.keys);
+  const existing = state.suppressions.filter(item => sameEmail(item.email));
+  for (const item of existing) addKeys(item.keys);
+  if (existing.length) {
+    for (const item of existing) { item.email = normalized; item.keys = [...keys]; }
+    return existing[0];
+  }
+  const suppression = { email: normalized, keys: [...keys], date: new Date().toISOString() };
+  state.suppressions.push(suppression);
+  return suppression;
 }

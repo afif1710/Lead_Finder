@@ -144,9 +144,21 @@ export async function createMapsBrowser({ root, directory, signal, channel = 'ms
       await gate(page);
       const ui = page.locator('maps-lead-finder');
       await ui.waitFor({ timeout: 15000 });
-      if (!await page.locator(selectors.feed).count()) {
-        if (await page.locator(selectors.noResults).count()) return { candidates: [], status: 'zero_results', file: null };
-        throw problem('layout_changed', 'Maps did not show a usable results list for this query.');
+      // The extension can initialize before Maps has hydrated its results.
+      // Wait for a visible result/zero-result state rather than abandoning a
+      // query just because its shell reached DOMContentLoaded first.
+      const readyDeadline = Date.now() + 18000;
+      while (true) {
+        if (signal?.aborted) throw problem('cancelled', 'Maps results loading was stopped.');
+        await gate(page);
+        const ready = await page.evaluate(({ feed, noResults }) => {
+          const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden';
+          return { feed: [...document.querySelectorAll(feed)].some(visible), zero: [...document.querySelectorAll(noResults)].some(visible) };
+        }, selectors);
+        if (ready.feed) break;
+        if (ready.zero) return { candidates: [], status: 'zero_results', file: null };
+        if (Date.now() >= readyDeadline) throw problem('layout_changed', 'Maps did not show a usable results list for this query within the loading limit.');
+        await bounded(page.waitForTimeout(Math.min(250, Math.max(1, readyDeadline - Date.now()))), 1000, signal, 'Maps results loading');
       }
       await ui.locator('#profession').fill(query.profession); await ui.locator('#city').fill(query.city);
       await ui.locator('#code').fill('+1'); await ui.locator('#filter').check();
@@ -184,23 +196,41 @@ export async function createMapsBrowser({ root, directory, signal, channel = 'ms
       } finally { await bridge.close(); }
     },
     async verify(candidate) {
+      const verificationDeadline = Date.now() + 39000;
       const url = new URL(candidate.link);
       if (url.protocol !== 'https:' || url.hostname !== 'www.google.com' || !url.pathname.startsWith('/maps/place/')) throw problem('profile_mismatch', 'The candidate has no exact Google Maps place URL.');
       await detailPage.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 25000 });
       await gate(detailPage);
-      await detailPage.locator(selectors.detailPhone).first().waitFor({ timeout: 10000 });
-      await detailPage.waitForTimeout(1500);
-      const details = await detailPage.evaluate(({ selectors }) => {
+      await detailPage.locator(selectors.detailPhone).first().waitFor({ timeout: Math.max(1, Math.min(10000, verificationDeadline - Date.now())) });
+      const readDetails = () => detailPage.evaluate(({ selectors }) => {
         const headings = [...document.querySelectorAll(selectors.detailHeading)].filter(node => node.getClientRects().length);
         const heading = headings.find(node => !node.closest(selectors.card));
         const main = heading?.closest(selectors.main);
         if (!main) return null;
         const phone = main.querySelector(selectors.detailPhone), address = main.querySelector(selectors.detailAddress), category = main.querySelector(selectors.detailCategory);
+        const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden';
         return { businessName: heading.textContent.trim(), rawPhone: phone?.getAttribute('data-item-id')?.replace(/^phone:tel:/, '') || phone?.getAttribute('href')?.replace(/^tel:/, '') || '',
           address: address?.getAttribute('aria-label')?.replace(/^Address:\s*/i, '') || address?.textContent.trim() || '',
           category: category?.textContent.trim() || '', websiteListed: Boolean(main.querySelector(selectors.websiteAction)),
+          busy: main.matches(selectors.busy) || [...main.querySelectorAll(selectors.busy)].some(visible),
           permanentlyClosed: /Permanently closed/i.test(main.innerText), mapsUrl: location.href };
       }, { selectors });
+      // Phone/address can hydrate before the Website action. Absence is only
+      // confirmed after the visible profile stops loading and its contact
+      // fields remain stable; an unsettled profile is skipped, never a lead.
+      const settleDeadline = Math.min(verificationDeadline, Date.now() + 10000);
+      let details, signature = '', unchangedSince = Date.now(), settled = false;
+      while (Date.now() < settleDeadline) {
+        if (signal?.aborted) throw problem('cancelled', 'Individual business verification was stopped.');
+        await gate(detailPage);
+        details = await readDetails();
+        if (details?.websiteListed) throw problem('website_listed', 'The individual Maps profile has a website.');
+        const next = JSON.stringify(details);
+        if (next !== signature || details?.busy) { signature = next; unchangedSince = Date.now(); }
+        if (details?.businessName && details.rawPhone && !details.busy && Date.now() - unchangedSince >= 1500) { settled = true; break; }
+        await bounded(detailPage.waitForTimeout(Math.min(200, Math.max(1, settleDeadline - Date.now()))), 1000, signal, 'Profile contact loading');
+      }
+      if (!settled) throw problem('profile_unsettled', 'The Maps profile was still loading; missing website evidence was not confirmed.');
       if (!details || normalizedName(details.businessName) !== normalizedName(candidate.name) || phoneDigits(details.rawPhone) !== phoneDigits(candidate.phone)) throw problem('profile_mismatch', 'The Maps profile name or phone did not match the exported business.');
       if (details.websiteListed) throw problem('website_listed', 'The individual Maps profile has a website.');
       if (details.permanentlyClosed) throw problem('closed', 'The business is permanently closed.');

@@ -19,6 +19,16 @@ async function fixture(t) {
   return { root, directory, store, baseline: [], config: { sender, snovCredentialsFile: 'fixture-unused', limits: { maxSnovRequestsPerRun: 20, maxSnovCreditsPerRun: 5, discoveryMinutes: 1, pauseSeconds: 5 } } };
 }
 
+test('invalid sender settings stop before collecting leads or spending Snov credits', async t => {
+  const data = await fixture(t);
+  data.config.sender = { ...sender, postalAddress: '' };
+  const notCalled = async () => assert.fail('Sender validation must precede external work');
+  await assert.rejects(runAutomation({ ...data, runOptions: { dryRun: true }, collect: notCalled,
+    providerFactory: notCalled, sendMessage: notCalled }), /postal address/);
+  assert.equal(data.store.state.workflow, undefined);
+  assert.equal(data.store.state.sends.length, 0);
+});
+
 test('complete Maps-to-email workflow selects exactly one contact and closes after the first batch', async t => {
   const data = await fixture(t); const events = [], current = lead(1);
   const collect = async () => { events.push('maps'); const file = join(data.root, 'leads.csv'); await writeLeadCsv(file, [current]); return { leads: [current], file, stopReason: 'target_reached' }; };

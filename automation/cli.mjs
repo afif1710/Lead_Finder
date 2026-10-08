@@ -2,8 +2,8 @@ import { readFile, mkdir, access, appendFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadLeads } from './lib/leads.mjs';
-import { writeJson, openStore, withLock } from './lib/store.mjs';
-import { eligibleContacts, discover, preparePilot, sendPilot } from './lib/workflow.mjs';
+import { writeJson, openStore, withLock, suppressEmail } from './lib/store.mjs';
+import { eligibleContacts, discover, preparePilot, sendPilot, sendAlternateTest } from './lib/workflow.mjs';
 import { validateSender } from './lib/templates.mjs';
 import { parseRunOptions, mergeLeads, runAutomation } from './lib/pipeline.mjs';
 
@@ -57,12 +57,12 @@ async function status(config, leads, store) {
 async function run() {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node.js 22 or later is required.');
   if (command === 'init') return init();
-  if (!['status', 'setup', 'collect', 'run', 'discover', 'prepare', 'authorize', 'send', 'suppress'].includes(command)) throw new Error('Commands: init, setup, collect, run, status, discover, prepare, authorize, send, suppress <email>.');
+  if (!['status', 'setup', 'collect', 'run', 'discover', 'prepare', 'authorize', 'send', 'send-alternate-test', 'suppress'].includes(command)) throw new Error('Commands: init, setup, collect, run, status, discover, prepare, authorize, send, send-alternate-test <email> <original-test-attempt-id>, suppress <email>.');
   const config = await settings();
   let leads = await loadLeads(config.leadsFile, config.limits.maxBusinesses);
   return withLock(directory, async () => {
     const store = await openStore(directory);
-    if (['status', 'prepare', 'send'].includes(command) && store.state.workflow?.mapsFile && store.state.workflow.mapsLeadCount) leads = mergeLeads(leads, await loadLeads(store.state.workflow.mapsFile, 100));
+    if (['status', 'prepare', 'send', 'send-alternate-test'].includes(command) && store.state.workflow?.mapsFile && store.state.workflow.mapsLeadCount) leads = mergeLeads(leads, await loadLeads(store.state.workflow.mapsFile, 100));
     if (command === 'setup') {
       const { startSetup } = await import('./lib/setup.mjs');
       return startSetup({ directory, configFile, config, signal: signalController.signal, onUrl: url => console.log(`Open this local setup page in Edge yourself:\n${url}`) });
@@ -106,13 +106,15 @@ async function run() {
       const { sendGmailMessage } = await import('./lib/gmail.mjs');
       console.log(JSON.stringify(await sendPilot({ leads, store, sender: config.sender, directory, sendMessage: sendGmailMessage,
         signal: signalController.signal, pauseSeconds: config.limits.pauseSeconds, onProgress: console.log }), null, 2));
+    } else if (command === 'send-alternate-test') {
+      if (process.argv.length !== 5) throw new Error('Supply only the exact saved alternate email and the original accepted test attempt ID.');
+      const { sendGmailMessage } = await import('./lib/gmail.mjs');
+      console.log(JSON.stringify(await sendAlternateTest({ leads, store, sender: config.sender, directory,
+        email: process.argv[3], priorAttemptId: process.argv[4], sendMessage: sendGmailMessage,
+        signal: signalController.signal, onProgress: console.log }), null, 2));
     } else if (command === 'suppress') {
-      const { validEmail, leadKeys } = await import('./lib/leads.mjs');
       const email = (process.argv[3] || '').trim().toLowerCase();
-      if (!validEmail(email)) throw new Error('Supply a valid email to suppress.');
-      const matching = Object.values(store.state.contacts).find(c => c.emails?.some(e => e.email.toLowerCase() === email));
-      const keys = matching ? leadKeys(matching) : [];
-      if (!store.state.suppressions.some(s => s.email === email)) store.state.suppressions.push({ email, keys, date: new Date().toISOString() });
+      suppressEmail(store.state, email);
       await store.save(); console.log('Address suppressed from future outreach.');
     }
   });

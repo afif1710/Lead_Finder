@@ -61,19 +61,29 @@ export async function discover({ leads, store, provider, directory, signal, onPr
     await store.save();
     let found;
     const onCheckpoint = async checkpoint => {
-      state.discovery[lead.id].checkpoint = checkpoint;
+      const { partialResult, ...metadata } = checkpoint;
+      if (partialResult) {
+        if (!['matched', 'no_email', 'needs_review'].includes(partialResult.status) || !Array.isArray(partialResult.emails)) throw new Error('Snov returned an invalid partial checkpoint.');
+        const snapshot = structuredClone(partialResult);
+        // Completed provider results survive a hard interruption, but the
+        // unfinished lookup remains ineligible and cannot be paid for again.
+        state.discovery[lead.id] = { ...state.discovery[lead.id], ...snapshot, status: 'in_progress', businessName: lead.businessName, checkpoint: metadata };
+        state.contacts[lead.id] = { ...lead, emails: snapshot.emails };
+      } else state.discovery[lead.id].checkpoint = metadata;
       await store.save();
+      if (partialResult) await writeJson(join(directory, 'collected-emails.json'), leads.map(l => ({ ...l, result: state.discovery[l.id] || { status: 'not_checked' } })));
     };
     try {
       found = databaseOnly ? await provider.findDatabaseEmails(lead, { signal, onCheckpoint })
         : await provider.findEmails(lead, { signal, onCheckpoint });
     }
     catch (error) {
-      state.discovery[lead.id] = { ...(error.partialResult || {}), status: 'interrupted', businessName: lead.businessName,
-        emails: error.partialResult?.emails || [], errorCode: error.code || 'api_error', checkedAt: new Date().toISOString(),
-        checkpoint: state.discovery[lead.id].checkpoint || null,
+      const saved = state.discovery[lead.id];
+      state.discovery[lead.id] = { ...saved, ...(error.partialResult || {}), status: 'interrupted', businessName: lead.businessName,
+        emails: error.partialResult?.emails || saved.emails || [], errorCode: error.code || 'api_error', checkedAt: new Date().toISOString(),
+        checkpoint: saved.checkpoint || null,
         ...(databaseOnly ? { previousResult: previous, searchedRoutes: previous.searchedRoutes || ['domain'] } : {}) };
-      if (error.partialResult) state.contacts[lead.id] = { ...lead, emails: error.partialResult.emails || [] };
+      state.contacts[lead.id] = { ...lead, emails: state.discovery[lead.id].emails };
       await store.save();
       await writeJson(join(directory, 'collected-emails.json'), leads.map(l => ({ ...l, result: state.discovery[l.id] || { status: 'not_checked' } })));
       throw error;
@@ -159,4 +169,62 @@ export async function sendPilot({ leads, store, sender, directory, sendMessage, 
   await store.save();
   await writeJson(join(directory, 'pilot-results.json'), { sentThisRun: sent, attemptedTotal: state.sends.length, closed: true, sends: state.sends });
   return { sent, attemptedTotal: state.sends.length, closed: true };
+}
+
+/** Manual exception for one newly requested alternate-address test; never reopens a batch. */
+export async function sendAlternateTest({ leads, store, sender, directory, email, priorAttemptId, sendMessage, signal, onProgress = () => {} }) {
+  validateSender(sender);
+  const { state } = store;
+  if (!validEmail(email) || typeof priorAttemptId !== 'string' || !priorAttemptId || typeof sendMessage !== 'function') throw new Error('Supply one exact saved Snov address and the original accepted test attempt ID.');
+  email = email.toLowerCase();
+  if (!state.pilot.closed || state.sends.length >= 10) throw new Error('The alternate test requires a closed pilot with an unused attempt slot.');
+  if (state.sends.some(send => ['reserved', 'unknown'].includes(send.status))) throw new Error('An unresolved email attempt blocks any alternate test. Review Gmail Sent first.');
+  if (signal?.aborted) throw new Error('The alternate test was cancelled before any email was attempted.');
+  const prior = state.sends.find(send => send.id === priorAttemptId);
+  if (!prior || prior.status !== 'sent' || !prior.gmailMessageId || !prior.unverifiedTest || prior.alternateTest) throw new Error('The original attempt must be a previously accepted single Snov test.');
+  const original = leads.find(lead => lead.id === prior.leadId);
+  if (!original) throw new Error('The original test business is not present in the saved input.');
+  const lead = { ...original, keys: leadKeys(original) };
+  if (!prior.keys.some(key => lead.keys.includes(key)) || prior.businessName !== lead.businessName) throw new Error('The original test business identity changed.');
+  if (email === prior.email.toLowerCase()) throw new Error('The original recipient cannot be retried.');
+  const found = state.discovery[lead.id];
+  const evidence = found?.status === 'matched' && found.emails?.find(item => item.source === 'Snov.io'
+    && item.email.toLowerCase() === email && ['valid', 'unknown'].includes(item.status));
+  if (!evidence) throw new Error('The alternate address must already be a matched Snov contact for this same business.');
+  if (isSuppressed(state, lead, email)) throw new Error('The business or address is suppressed; no alternate test is permitted.');
+  // Only the explicitly identified original attempt is exempt from the business-repeat guard.
+  const otherHistory = { ...state, sends: state.sends.filter(send => send.id !== priorAttemptId) };
+  if (alreadyAttempted(otherHistory, lead, email)) throw new Error('An alternate or another attempt already exists for this business or address. No repeat is permitted.');
+  await access(join(directory, 'gmail-auth.json')).catch(() => { throw new Error('Gmail is not authorized.'); });
+  const recipient = { ...lead, email, emailEvidence: evidence, companyEvidence: found.evidence };
+  const draft = draftEmail(recipient, sender);
+  const attempt = { id: randomUUID(), batchId: randomUUID(), leadId: lead.id, keys: lead.keys, email,
+    businessName: lead.businessName, status: 'reserved', startedAt: new Date().toISOString(), messageId: `${randomUUID()}@gmail.com`,
+    unverifiedTest: { email, originalStatus: evidence.status, scope: 'One newly requested alternate-address test; regular outreach requires verified contacts.' },
+    alternateTest: { priorAttemptId, reason: 'User reported the original recipient address was wrong and explicitly requested this other saved address.' } };
+  await writeJson(join(directory, 'alternate-test-preview.json'), { preparedAt: new Date().toISOString(), recipient, draft, priorAttemptId });
+  if (signal?.aborted) throw new Error('The alternate test was cancelled before any email was attempted.');
+  prior.deliveryReport = { status: 'user_reported_invalid_recipient', reportedAt: new Date().toISOString() };
+  // Keep the previous API acceptance intact; the user report does not confirm a provider bounce.
+  state.sends.push(attempt);
+  state.pilot.closed = true;
+  await store.save();
+  try {
+    const receipt = await sendMessage({ raw: rawMessage(draft, sender, attempt.messageId), privateDir: directory, signal });
+    if (!receipt?.id) throw Object.assign(new Error('Gmail response has no message ID.'), { code: 'send_unknown' });
+    attempt.status = 'sent'; attempt.gmailMessageId = receipt.id; attempt.completedAt = new Date().toISOString();
+    state.pilot.reason = 'alternate_test_complete_requires_review';
+    await store.save();
+    onProgress('Gmail accepted the one alternate-address test. Delivery still requires manual confirmation.');
+  } catch (error) {
+    attempt.status = error.code === 'send_unknown' || error.sendOutcome === 'unknown' || error.name === 'AbortError' ? 'unknown' : 'failed';
+    attempt.errorCode = error.code || 'send_error'; attempt.completedAt = new Date().toISOString();
+    state.pilot.closed = true; state.pilot.reason = 'alternate_test_failure_requires_review';
+    await store.save();
+    throw new Error('The alternate test stopped after one attempt. Inspect Gmail Sent; it will not be retried automatically.');
+  }
+  const result = { sentThisRun: 1, attemptedTotal: state.sends.length, closed: true, sends: state.sends };
+  await writeJson(join(directory, 'alternate-test-results.json'), result);
+  await writeJson(join(directory, 'pilot-results.json'), result);
+  return { accepted: 1, attemptedTotal: state.sends.length, closed: true };
 }

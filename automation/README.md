@@ -2,7 +2,7 @@
 
 An on-demand local workflow that searches Google Maps using the actual Lead Finder extension, downloads no-website CSVs, verifies and deduplicates US businesses, looks up their emails in Snov.io, prepares profession-specific website pitches, and sends at most ten individual first emails from **Afif <craftedwebstudio@gmail.com>**. It stops after the first batch for the user to check Gmail Sent and handle replies.
 
-On 8 October 2026, the complete live workflow collected a new Maps lead, completed its Snov lookup, and submitted the user's single authorized test to one saved Snov contact. Gmail accepted it and the pilot is now closed for review. Sending or running the complete workflow again is blocked until the user explicitly requests another batch; Maps-only collection remains available. Acceptance does not establish delivery. See [validation details](../TESTING.md).
+On 8 October 2026, the complete live workflow collected a new Maps lead, completed its Snov lookup, and submitted the user's single authorized test to one saved Snov contact. The user later reported that first recipient was wrong and explicitly requested one test to the other saved address. Gmail accepted that separate alternate test, bringing the attempt total to two; both addresses retain their unknown Snov verification status. The normal pilot remains closed for review. Sending or running the complete workflow again is blocked until the user explicitly requests another batch; Maps-only collection remains available. Acceptance does not establish delivery. See [validation details](../TESTING.md).
 
 This folder is separate from the Maps extension and has no recurring scheduler. Maps collection uses a separate headless Edge profile; it does not need your normal Maps tab open, copy login cookies, or operate your everyday browser. If Edge cannot load the extension, it tries Playwright Chromium once. Browser profiles, CSVs, credentials and history remain on E: and are excluded from Git. Your computer must stay awake and connected while a run is active.
 
@@ -31,7 +31,7 @@ node automation/cli.mjs status
 
 Each run saves original six-column extension downloads under `csv_exports/raw/<run-id>/` and a sorted, unique CSV with names, phones, actual category, verified address/location, Maps URLs and website evidence under `csv_exports/processed/`. The original processed 100-business CSV is retained as the initial baseline. Previously collected phones, places and business/location keys are kept in history and excluded from later collection. A query area is labelled **Search area** when Maps does not reveal an address; Snov cannot use that label as confirmed business-city evidence.
 
-The run saves progress before a search, paid Snov operation, and Gmail submission. A restart reuses completed Maps and Snov stages. An interrupted paid lookup remains set aside; the workflow never resets it to spend credits again. Zero new leads or zero verified contacts produces a saved result and stops. A search plan that is exhausted also stops; add explicit new USA queries to local `maps.queries` rather than looping the same searches forever.
+The run saves progress before a search, paid Snov operation, and Gmail submission. A restart reuses completed Maps and Snov stages. An interrupted paid lookup remains set aside; already returned contacts are retained locally, but that unfinished lookup is neither retried nor eligible for automatic sending. When there are no eligible contacts among the saved and newly collected leads, the run saves a result and stops. A run with zero new leads can still prepare eligible saved baseline contacts within the existing pilot limit. A search plan that is exhausted also stops; add explicit new USA queries to local `maps.queries` rather than looping the same searches forever.
 
 ## Requirements
 
@@ -85,6 +85,8 @@ node automation/cli.mjs authorize
 
 Authorization asks for Gmail sending and minimal account-email identification (`gmail.send`, `openid`, `email`). It verifies that you chose `craftedwebstudio@gmail.com`; it does not grant inbox access or handle replies. The callback is local to `127.0.0.1` and waits at most ten minutes, then closes automatically. Complete all Google approval screens during that window. If the callback page refuses to connect after a timeout, rerun authorize and start from its fresh permission link; refreshing the expired callback cannot reconnect it. A failed or cancelled reconnection preserves the previous saved authorization. Refresh tokens stay in `.local/gmail-auth.json`. If testing-mode authorization expires or permission is revoked, rerun authorize; do not share your Google password. See [Google Desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app), [Gmail permissions](https://developers.google.com/workspace/gmail/api/auth/scopes), and [sending messages](https://developers.google.com/workspace/gmail/api/guides/sending).
 
+The owner switched the Google OAuth app to **In production** and completed a fresh authorization on 8 October 2026. This removes the normal seven-day testing-mode refresh-token lifetime; it does not guarantee permanent permission. Revocation, a Gmail password change, prolonged inactivity and other Google limits can still require reconnection. A personal app may retain Google's unverified-app warning. The public information pages are [homepage](https://craftedwebstudio.vercel.app/lead-finder), [privacy](https://craftedwebstudio.vercel.app/lead-finder/privacy), and [terms](https://craftedwebstudio.vercel.app/lead-finder/terms); they do not expose the local automation. See [Google token expiration](https://developers.google.com/identity/protocols/oauth2#expiration).
+
 ## Send the first batch, then stop
 
 After the lookup, sender details, Google authorization, and preview are ready:
@@ -107,6 +109,14 @@ node automation/cli.mjs run --target 1 --searches 1 --minutes 5 --scan-seconds 1
 ```
 
 The address must already be in the saved initial leads as a matched Snov contact marked valid or unknown; guessed addresses, wrong-company matches and invalid addresses are rejected. This command prepares exactly one recipient, preserves the original unknown verification status, reserves the attempt before submission, counts it against the pilot, and closes the batch after that attempt. It cannot enable unverified bulk outreach. An ambiguous or failed send stops without retry. The initial user-approved test does not authorize later test emails or reopening the pilot.
+
+If the user later reports the original recipient was wrong and explicitly requests **one** test to another saved Snov address for that same business, use this separate manual command:
+
+```sh
+node automation/cli.mjs send-alternate-test EXACT_OTHER_SAVED_ADDRESS ORIGINAL_ACCEPTED_TEST_ATTEMPT_ID
+```
+
+This command requires the original Gmail-accepted single-test receipt, a closed pilot, an unused slot within ten lifetime attempts, and a different valid-or-unknown Snov contact from the same matched business. Suppression, any unresolved attempt, an already attempted recipient, or any other attempt for that business blocks it. It records the user-reported delivery problem separately from the original API acceptance, saves a local preview and reservation, makes one Gmail submission, and leaves the normal pilot closed. A second alternate attempt is blocked even if the first alternate failed or had an uncertain result. Do not run it without a fresh explicit request; it is never called by `run` or by an automatic recovery loop.
 
 Record an opt-out locally when the user receives one:
 

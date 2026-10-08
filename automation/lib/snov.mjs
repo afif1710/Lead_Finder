@@ -324,10 +324,16 @@ export async function createSnovProvider({
     });
     if (!normalizeName(requestedName)) return empty('needs_review', 'Missing business name.');
     if (onCheckpoint !== undefined && typeof onCheckpoint !== 'function') stop(error('api_error'));
-    const checkpoint = async (phase, count = 0) => {
+    const checkpoint = async (phase, partialResult = priorResult) => {
       if (!onCheckpoint) return;
-      try { await onCheckpoint({ operation: 'database_search', phase, foundEmails: count }); }
-      catch { stop(error('api_error')); }
+      try {
+        await onCheckpoint({ operation: 'database_search', phase, foundEmails: partialResult?.emails?.length || 0,
+          ...(partialResult ? { partialResult: structuredClone(partialResult) } : {}) });
+      } catch {
+        const problem = error('api_error');
+        if (partialResult) problem.partialResult = structuredClone(partialResult);
+        stop(problem);
+      }
     };
     await checkpoint('started');
     // Database Search accepts a company name directly. It does not require a
@@ -403,7 +409,7 @@ export async function createSnovProvider({
         revealed.add(revealURL.pathname);
         reserveCredits(1);
         // Persist the bounded checkpoint before any potentially paid reveal.
-        await checkpoint('reveal_reserved', result.emails.length);
+        await checkpoint('reveal_reserved', result);
         const reveal = await api('POST', revealURL.pathname, {}, signal, true);
         const revealHash = hashOf(reveal);
         const found = await poll(safeResultPath(reveal, `/v2/database-search/prospects/search-emails/result/${revealHash}`), signal);
@@ -427,7 +433,7 @@ export async function createSnovProvider({
           if (!existing) result.emails.push(candidate);
           else if (candidate.status === 'valid') Object.assign(existing, candidate);
         }
-        await checkpoint('reveal_completed', result.emails.length);
+        await checkpoint('reveal_completed', result);
       } catch (problem) {
         const classified = problem instanceof SnovError ? problem : error('api_error');
         if (classified.code === 'budget' && result.emails.length) {
@@ -439,11 +445,11 @@ export async function createSnovProvider({
         throw classified;
       }
     }
-    await checkpoint('completed', result.emails.length);
     if (!result.emails.length) {
       result.status = 'no_email';
       result.reason = 'Snov returned no email from the matched company prospects within the three-contact reveal limit.';
     }
+    await checkpoint('completed', result);
     return result;
   }
 
@@ -452,6 +458,18 @@ export async function createSnovProvider({
     findDatabaseEmails: databaseEmails,
     async findEmails(lead, { signal, onCheckpoint } = {}) {
       check(signal);
+      if (onCheckpoint !== undefined && typeof onCheckpoint !== 'function') stop(error('api_error'));
+      const checkpoint = async (phase, partialResult) => {
+        if (!onCheckpoint) return;
+        try {
+          await onCheckpoint({ operation: 'domain_search', phase, foundEmails: partialResult.emails.length,
+            partialResult: structuredClone(partialResult) });
+        } catch {
+          const problem = error('api_error');
+          problem.partialResult = structuredClone(partialResult);
+          stop(problem);
+        }
+      };
       const requestedName = String(lead?.businessName || '').trim();
       if (!normalizeName(requestedName)) return { status: 'needs_review', reason: 'Missing business name.', company: null, emails: [], searchedRoutes: [], evidence: {} };
       reserveCredits(1);
@@ -469,6 +487,8 @@ export async function createSnovProvider({
       if (domains.length !== 1) return databaseEmails(lead, { signal, onCheckpoint }, { status: 'needs_review', reason: 'Snov returned multiple company domains.', company: null, emails: [], evidence: { requestedName, domains, source: 'Snov.io' } });
       let domain;
       try { domain = checkedDomain(domains[0]); } catch (problem) { stop(problem); }
+      await checkpoint('domain_resolved', { status: 'needs_review', reason: 'Snov returned a domain; company identity has not yet been confirmed.',
+        company: null, emails: [], searchedRoutes: ['domain'], evidence: { requestedName, domain, source: 'Snov.io' } });
       const companyResult = await domainTask('', domain, signal);
       const data = companyResult.data;
       if ((Array.isArray(data) && !data.length) || (data && typeof data === 'object' && !Object.keys(data).length)) return databaseEmails(lead, { signal, onCheckpoint }, {
@@ -488,6 +508,8 @@ export async function createSnovProvider({
       if (!matched) return databaseEmails(lead, { signal, onCheckpoint }, {
         status: 'needs_review', reason: 'Company identity requires an exact name and non-conflicting phone match, or exact city and state with explicit US country evidence.', company, emails: [], evidence,
       });
+      await checkpoint('company_matched', { status: 'matched', reason: 'Company identity matched; contact lookup has not completed.',
+        company, emails: [], evidence, searchedRoutes: ['domain'] });
       let contacts = emailCandidates((await domainTask('generic-contacts', domain, signal)).data);
       if (!contacts.length) contacts = emailCandidates((await domainTask('domain-emails', domain, signal)).data);
       if (!contacts.length) return databaseEmails(lead, { signal, onCheckpoint }, { status: 'no_email', reason: 'The matched Snov company has no returned email addresses.', company, emails: [], evidence });
@@ -495,11 +517,13 @@ export async function createSnovProvider({
         status: 'matched', reason: 'Company identity matched; only emails actually returned by Snov are included.', company,
         emails: contacts.map(email => ({ email, status: 'unknown', source: 'Snov.io', verificationReason: 'not_checked', checkedAt: evidence.checkedAt })), evidence, searchedRoutes: ['domain'],
       };
+      await checkpoint('contacts_found', result);
       // The sender contacts one business once: verify at most three candidates,
       // stop at the first valid address, and retain every other found address.
       for (const candidate of result.emails.slice(0, 3)) {
         try {
           reserveCredits(1);
+          await checkpoint('verification_reserved', result);
           const verifyStart = await api('POST', '/v2/email-verification/start', [['emails[]', candidate.email]], signal);
           const verifyHash = hashOf(verifyStart);
           const verified = await poll(safeResultPath(verifyStart, `/v2/email-verification/result?task_hash=${verifyHash}`), signal);
@@ -511,6 +535,7 @@ export async function createSnovProvider({
           candidate.verificationReason = !row ? 'No verification result returned.' : String(row.result.unknown_status_reason || '');
           candidate.checkedAt = new Date().toISOString();
           if (row && candidate.status === 'unknown') metrics.creditsReserved -= 1;
+          await checkpoint('verification_completed', result);
           if (candidate.status === 'valid') break;
         } catch (problem) {
           if (problem?.code === 'budget') {
@@ -523,6 +548,7 @@ export async function createSnovProvider({
           throw classified;
         }
       }
+      await checkpoint('completed', result);
       return result;
     },
   };
